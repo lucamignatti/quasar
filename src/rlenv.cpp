@@ -10,7 +10,7 @@ RLEnv::RLEnv()
       kickoffDist(0, 2)
 {
     std::filesystem::path meshesPath = "collision_meshes";
-    RocketSim::Init(meshesPath);
+    RocketSim::Init(meshesPath, true);
     arena = RocketSim::Arena::Create(RocketSim::GameMode::SOCCAR);
 
     for (int i = 0; i < 4; i++) {
