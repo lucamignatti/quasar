@@ -1,5 +1,4 @@
-#ifndef VECENV_H
-#define VECENV_H
+#pragma once
 
 #include "rlenv.h"
 #include <vector>
@@ -114,5 +113,3 @@ private:
     std::vector<float> all_rewards_;
     std::vector<uint8_t> all_dones_;
 };
-
-#endif

@@ -7,10 +7,8 @@
 
 int main(int argc, char* argv[]) {
 
-    // Start tracing to file
     tracing::Tracer::Get().Start("perfetto_trace.json");
 
-    // Annotate the main thread name
     TRACE_THREAD_NAME("main");
 
     int num_envs = 24;
@@ -28,10 +26,8 @@ int main(int argc, char* argv[]) {
     }
 
     {
-        // Overall program scope
         TRACE_SCOPE("program");
 
-        // Initialize RocketSim once for the entire process (not per-env)
         {
             TRACE_SCOPE("rocketsim_init");
             std::filesystem::path meshesPath = "collision_meshes";
@@ -42,7 +38,6 @@ int main(int argc, char* argv[]) {
             RocketSim::Init(meshesPath, true);
         }
 
-        // Create VecEnv (envs will be initialized in parallel in worker threads)
         VecEnv vecenv(num_envs, num_threads);
 
         std::vector<std::array<int, 4>> actions(num_envs);
@@ -71,7 +66,6 @@ int main(int argc, char* argv[]) {
             std::cout << "Simulated " << total_steps << " steps in " << double_seconds.count() << " seconds, averaging " << total_steps/double_seconds.count() << " steps per second." << std::endl;
         }
 
-        // Stop tracing and write file
         tracing::Tracer::Get().Stop();
 
         return 0;

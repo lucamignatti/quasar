@@ -10,7 +10,6 @@ RLEnv::RLEnv()
     : gen(std::random_device{}()),
       kickoffDist(0, 2)
 {
-    // RocketSim::Init is now called once in main.cpp before VecEnv creation
     arena = RocketSim::Arena::Create(RocketSim::GameMode::SOCCAR);
 
     for (int i = 0; i < 4; i++) {

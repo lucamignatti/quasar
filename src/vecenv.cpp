@@ -9,15 +9,12 @@
 BatchWorker::BatchWorker(int worker_id, int num_envs_in_batch)
     : worker_id_(worker_id), num_envs_(num_envs_in_batch)
 {
-    // Reserve space but don't create environments yet - will be created in worker thread
     envs_.reserve(num_envs_);
 
-    // Pre-allocate local buffers (Change 3: local buffers to avoid false sharing)
     local_observations_.resize(num_envs_);
     local_rewards_.resize(num_envs_);
     local_dones_.resize(num_envs_);
 
-    // Start persistent worker thread (envs will be created there in parallel)
     thread_ = std::thread(&BatchWorker::worker_loop, this);
 }
 
@@ -81,18 +78,16 @@ void BatchWorker::wait() {
 }
 
 void BatchWorker::worker_loop() {
-    // Set thread name for tracing UI
     std::string thread_name = "worker/" + std::to_string(worker_id_);
     TRACE_THREAD_NAME(thread_name);
-    
-    // Create environments in parallel in this worker thread (not on main thread)
+
     {
         TRACE_SCOPE("worker_env_init");
         for (int i = 0; i < num_envs_; ++i) {
             envs_.push_back(std::make_unique<RLEnv>());
         }
     }
-    
+
     while (running_.load()) {
         WorkerCommand cmd;
 
@@ -121,7 +116,7 @@ void BatchWorker::worker_loop() {
 
                 case WorkerCommand::STEP: {
                     TRACE_SCOPE("worker_step");
-                    // Write to local buffers first (Change 3: avoid false sharing)
+                    // Write to local buffers first
                     for (int i = 0; i < num_envs_; ++i) {
                         int idx = start_idx_ + i;
                         bool terminated = false;
@@ -185,7 +180,6 @@ VecEnv::VecEnv(int num_envs, int num_threads)
 
     envs_per_thread_ = (num_envs + num_threads_ - 1) / num_threads_;
 
-    // Change 1: Pre-allocate buffers once
     all_observations_.resize(num_envs_);
     all_rewards_.resize(num_envs_);
     all_dones_.resize(num_envs_);
@@ -235,9 +229,6 @@ std::tuple<
             ") must match num_envs (" + std::to_string(num_envs_) + ")"
         );
     }
-
-    // Change 1: Reuse pre-allocated buffers instead of allocating every call
-    // No allocation here - buffers already sized in constructor
 
     for (size_t t = 0; t < workers_.size(); ++t) {
         int start_env = t * envs_per_thread_;

@@ -1,23 +1,3 @@
-// tracing.h
-//
-// Lightweight Perfetto/Chrome-trace compatible tracer header.
-// - Header-only, works on Linux/macOS
-// - In-process tracing (single-run): call `tracing::Tracer::Start("trace.json")` at program start,
-//   then `tracing::Tracer::Stop()` before exit.
-// - Use `TRACE_SCOPE("name")` to instrument scopes (records "B"/"E" events).
-// - Thread-safe: uses per-thread buffers that are periodically flushed to reduce memory.
-//
-// Usage example (in main):
-//   tracing::Tracer::Get().Start("perfetto_trace.json");
-//   TRACE_THREAD_NAME("main");
-//   {
-//     TRACE_SCOPE("program");
-//     ... your code ...
-//   }
-//   tracing::Tracer::Get().Stop();
-//
-// Open the generated JSON in chrome://tracing or Perfetto UI (ui.perfetto.dev).
-
 #pragma once
 
 #include <atomic>
@@ -85,13 +65,13 @@ public:
     // Record an event - write directly to file (streaming, no buffering)
     void Record(const std::string& name, char ph) {
         if (!started_.load(std::memory_order_acquire)) return;
-        
+
         Event e;
         e.name = name;
         e.ph = ph;
         e.ts = timestamp_us();
         e.tid = thread_id_hash();
-        
+
         // Write event immediately to file instead of buffering
         write_event(e);
     }

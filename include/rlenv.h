@@ -1,5 +1,4 @@
-#ifndef RLENV_H
-#define RLENV_H
+#pragma once
 
 #include <array>
 #include "Sim/Arena/Arena.h"
@@ -48,8 +47,3 @@ class RLEnv {
         static constexpr int BOOST_PAD_COUNT = 34;
         static constexpr int OBS_SIZE = 138;
 };
-
-
-
-
-#endif
