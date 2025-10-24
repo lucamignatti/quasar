@@ -1,7 +1,9 @@
 #include "vecenv.h"
+#include "tracing.h"
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <string>
 
 
 BatchWorker::BatchWorker(int worker_id, int num_envs_in_batch)
@@ -82,6 +84,10 @@ void BatchWorker::wait() {
 }
 
 void BatchWorker::worker_loop() {
+    // Set thread name for tracing UI
+    std::string thread_name = "worker/" + std::to_string(worker_id_);
+    TRACE_THREAD_NAME(thread_name);
+    
     while (running_.load()) {
         WorkerCommand cmd;
 
@@ -101,6 +107,7 @@ void BatchWorker::worker_loop() {
         try {
             switch (cmd) {
                 case WorkerCommand::RESET: {
+                    TRACE_SCOPE("worker_reset");
                     for (int i = 0; i < num_envs_; ++i) {
                         envs_[i]->reset((*observations_)[start_idx_ + i]);
                     }
@@ -108,6 +115,7 @@ void BatchWorker::worker_loop() {
                 }
 
                 case WorkerCommand::STEP: {
+                    TRACE_SCOPE("worker_step");
                     // Write to local buffers first (Change 3: avoid false sharing)
                     for (int i = 0; i < num_envs_; ++i) {
                         int idx = start_idx_ + i;
@@ -121,7 +129,7 @@ void BatchWorker::worker_loop() {
                             envs_[i]->reset(local_observations_[i]);
                         }
                     }
-                    
+
                     // Copy local results to shared buffers once at the end
                     for (int i = 0; i < num_envs_; ++i) {
                         int idx = start_idx_ + i;

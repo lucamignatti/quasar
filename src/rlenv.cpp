@@ -2,6 +2,7 @@
 #include "Sim/Arena/Arena.h"
 #include "Math/MathTypes/MathTypes.h"
 #include "RocketSim.h"
+#include "tracing.h"
 #include <algorithm>
 #include <vector>
 
@@ -280,32 +281,44 @@ void RLEnv::reset(std::array<std::array<float, 138>, 4> &obs) {
 
 void RLEnv::step(const std::array<int, 4>& actions, std::array<std::array<float, 138>, 4> &obs, float &reward, bool &terminated) {
 
-    for (int i = 0; i < NUM_AGENTS; ++i) {
-        const std::array<float, 8>& controlsArray = m_lookupTable.at(actions[i]);
-        RocketSim::CarControls controls = {};
-        controls.throttle = controlsArray[0];
-        controls.steer    = controlsArray[1];
-        controls.pitch    = controlsArray[2];
-        controls.yaw      = controlsArray[3];
-        controls.roll     = controlsArray[4];
-        controls.jump     = (bool)controlsArray[5];
-        controls.boost    = (bool)controlsArray[6];
-        controls.handbrake= (bool)controlsArray[7];
-        cars[i]->controls = controls;
+    {
+        TRACE_SCOPE("set_controls");
+        for (int i = 0; i < NUM_AGENTS; ++i) {
+            const std::array<float, 8>& controlsArray = m_lookupTable.at(actions[i]);
+            RocketSim::CarControls controls = {};
+            controls.throttle = controlsArray[0];
+            controls.steer    = controlsArray[1];
+            controls.pitch    = controlsArray[2];
+            controls.yaw      = controlsArray[3];
+            controls.roll     = controlsArray[4];
+            controls.jump     = (bool)controlsArray[5];
+            controls.boost    = (bool)controlsArray[6];
+            controls.handbrake= (bool)controlsArray[7];
+            cars[i]->controls = controls;
+        }
     }
 
-    // tick skip
-    arena->Step(ACTION_REPEATS);
+    {
+        TRACE_SCOPE("arena_step");
+        // tick skip
+        arena->Step(ACTION_REPEATS);
+    }
 
-    bool goalScored = arena->IsBallScored();
+    {
+        TRACE_SCOPE("check_termination");
+        bool goalScored = arena->IsBallScored();
 
-    // Check for timeout (30 seconds * 120 ticks/sec = 3600 ticks)
-    const uint64_t MAX_EPISODE_TICKS = 30 * 120;
-    bool timeOut = (arena->tickCount > MAX_EPISODE_TICKS);
+        // Check for timeout (30 seconds * 120 ticks/sec = 3600 ticks)
+        const uint64_t MAX_EPISODE_TICKS = 30 * 120;
+        bool timeOut = (arena->tickCount > MAX_EPISODE_TICKS);
 
-    terminated = goalScored || timeOut;
+        terminated = goalScored || timeOut;
 
-    reward = 0.0f; // placeholder
+        reward = 0.0f; // placeholder
+    }
 
-    obs = _getObs();
+    {
+        TRACE_SCOPE("get_obs");
+        obs = _getObs();
+    }
 }
