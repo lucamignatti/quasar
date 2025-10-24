@@ -22,10 +22,10 @@ RLEnv::RLEnv()
 
     _resetToKickoff();
     _buildLookupTable();
-    
+
     // Cache boost pads to avoid repeated allocations in _getObs()
     boostPads_ = arena->GetBoostPads();
-    
+
     // Pre-allocate reusable buffers
     allies_.reserve(ZERO_PADDING - 1);
     enemies_.reserve(ZERO_PADDING);
@@ -177,7 +177,7 @@ std::array<std::array<float, RLEnv::OBS_SIZE>, RLEnv::NUM_AGENTS> RLEnv::_getObs
 
     std::array<std::array<float, OBS_SIZE>, NUM_AGENTS> allObs;
     const auto& boostPads = boostPads_;
-    
+
     // Get ball state once for all agents (was being called 4 times)
     RocketSim::BallState ballState = arena->ball->GetState();
 
@@ -283,13 +283,13 @@ std::array<std::array<float, RLEnv::OBS_SIZE>, RLEnv::NUM_AGENTS> RLEnv::_getObs
     return allObs;
 }
 
-void RLEnv::reset(std::array<std::array<float, 138>, 4> &obs) {
+void RLEnv::reset(std::array<std::array<float, 132>, 4> &obs) {
     _resetToKickoff();
     obs = _getObs();
 }
 
 
-void RLEnv::step(const std::array<int, 4>& actions, std::array<std::array<float, 138>, 4> &obs, float &reward, bool &terminated) {
+void RLEnv::step(const std::array<int, 4>& actions, std::array<std::array<float, 132>, 4> &obs, float &reward, bool &terminated) {
 
     {
         TRACE_SCOPE("set_controls");

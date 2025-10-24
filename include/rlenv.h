@@ -12,8 +12,8 @@ class RLEnv {
         RLEnv(const RLEnv&) = delete;
         RLEnv& operator=(const RLEnv&) = delete;
 
-        void reset(std::array<std::array<float, 138>, 4> &obs);
-        void step(const std::array<int, 4>& actions, std::array<std::array<float, 138>, 4> &obs, float &reward, bool &terminated);
+        void reset(std::array<std::array<float, 132>, 4> &obs);
+        void step(const std::array<int, 4>& actions, std::array<std::array<float, 132>, 4> &obs, float &reward, bool &terminated);
     private:
 
         static constexpr int ACTION_REPEATS = 8;
@@ -46,7 +46,7 @@ class RLEnv {
 
         void _resetToKickoff();
 
-        std::array<std::array<float, 138>, 4> _getObs();
+        std::array<std::array<float, OBS_SIZE>, NUM_AGENTS> _getObs();
 
         std::array<float, 20> _generateCarObs(RocketSim::Car* car, bool inverted) const;
 

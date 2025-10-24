@@ -42,7 +42,7 @@ void BatchWorker::shutdown() {
     }
 }
 
-void BatchWorker::reset_async(std::vector<std::array<std::array<float, 138>, 4>>* observations,
+void BatchWorker::reset_async(std::vector<std::array<std::array<float, 132>, 4>>* observations,
                                int start_idx) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -57,7 +57,7 @@ void BatchWorker::reset_async(std::vector<std::array<std::array<float, 138>, 4>>
 
 void BatchWorker::step_async(
     const std::vector<std::array<int, 4>>* actions,
-    std::vector<std::array<std::array<float, 138>, 4>>* observations,
+    std::vector<std::array<std::array<float, 132>, 4>>* observations,
     std::vector<float>* rewards,
     std::vector<uint8_t>* dones,
     int start_idx)
@@ -213,8 +213,8 @@ VecEnv::~VecEnv() {
     }
 }
 
-std::vector<std::array<std::array<float, 138>, 4>> VecEnv::reset() {
-    std::vector<std::array<std::array<float, 138>, 4>> all_observations(num_envs_);
+std::vector<std::array<std::array<float, 132>, 4>> VecEnv::reset() {
+    std::vector<std::array<std::array<float, 132>, 4>> all_observations(num_envs_);
 
     for (size_t t = 0; t < workers_.size(); ++t) {
         int start_env = t * envs_per_thread_;
@@ -229,7 +229,7 @@ std::vector<std::array<std::array<float, 138>, 4>> VecEnv::reset() {
 }
 
 std::tuple<
-    std::vector<std::array<std::array<float, 138>, 4>>,
+    std::vector<std::array<std::array<float, 132>, 4>>,
     std::vector<float>,
     std::vector<uint8_t>
 > VecEnv::step(const std::vector<std::array<int, 4>>& actions) {

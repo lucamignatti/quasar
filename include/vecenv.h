@@ -39,11 +39,11 @@ public:
     BatchWorker(BatchWorker&&) = delete;
     BatchWorker& operator=(BatchWorker&&) = delete;
 
-    void reset_async(std::vector<std::array<std::array<float, 138>, 4>>* observations,
+    void reset_async(std::vector<std::array<std::array<float, 132>, 4>>* observations,
                      int start_idx);
 
     void step_async(const std::vector<std::array<int, 4>>* actions,
-                    std::vector<std::array<std::array<float, 138>, 4>>* observations,
+                    std::vector<std::array<std::array<float, 132>, 4>>* observations,
                     std::vector<float>* rewards,
                     std::vector<uint8_t>* dones,
                     int start_idx);
@@ -74,7 +74,7 @@ private:
     // Pointers to shared data buffers and starting index
     alignas(CACHE_LINE_SIZE) int start_idx_{0};
     const std::vector<std::array<int, 4>>* actions_{nullptr};
-    std::vector<std::array<std::array<float, 138>, 4>>* observations_{nullptr};
+    std::vector<std::array<std::array<float, 132>, 4>>* observations_{nullptr};
     std::vector<float>* rewards_{nullptr};
     std::vector<uint8_t>* dones_{nullptr};
 };
@@ -89,10 +89,10 @@ public:
     VecEnv(VecEnv&&) = delete;
     VecEnv& operator=(VecEnv&&) = delete;
 
-    std::vector<std::array<std::array<float, 138>, 4>> reset();
+    std::vector<std::array<std::array<float, 132>, 4>> reset();
 
     std::tuple<
-        std::vector<std::array<std::array<float, 138>, 4>>,
+        std::vector<std::array<std::array<float, 132>, 4>>,
         std::vector<float>,
         std::vector<uint8_t>
     > step(const std::vector<std::array<int, 4>>& actions);
@@ -113,7 +113,7 @@ private:
     std::vector<std::unique_ptr<BatchWorker>> workers_;
 
     // Pre-allocated buffers - cache-aligned via environment distribution
-    std::vector<std::array<std::array<float, 138>, 4>> all_observations_;
+    std::vector<std::array<std::array<float, 132>, 4>> all_observations_;
     std::vector<float> all_rewards_;
     std::vector<uint8_t> all_dones_;
 };
