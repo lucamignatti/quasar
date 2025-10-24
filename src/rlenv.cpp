@@ -22,6 +22,13 @@ RLEnv::RLEnv()
 
     _resetToKickoff();
     _buildLookupTable();
+    
+    // Cache boost pads to avoid repeated allocations in _getObs()
+    boostPads_ = arena->GetBoostPads();
+    
+    // Pre-allocate reusable buffers
+    allies_.reserve(ZERO_PADDING - 1);
+    enemies_.reserve(ZERO_PADDING);
 }
 
 RLEnv::~RLEnv()
@@ -169,7 +176,10 @@ std::array<float, RLEnv::CAR_OBS_SIZE> RLEnv::_generateCarObs(RocketSim::Car* ca
 std::array<std::array<float, RLEnv::OBS_SIZE>, RLEnv::NUM_AGENTS> RLEnv::_getObs() {
 
     std::array<std::array<float, OBS_SIZE>, NUM_AGENTS> allObs;
-    auto boostPads = arena->GetBoostPads();
+    const auto& boostPads = boostPads_;
+    
+    // Get ball state once for all agents (was being called 4 times)
+    RocketSim::BallState ballState = arena->ball->GetState();
 
     for (int i = 0; i < NUM_AGENTS; ++i) {
         RocketSim::Car* car = cars[i];
@@ -179,29 +189,27 @@ std::array<std::array<float, RLEnv::OBS_SIZE>, RLEnv::NUM_AGENTS> RLEnv::_getObs
 
         std::array<float, OBS_SIZE>& obs = allObs[i];
 
-        std::fill(obs.begin(), obs.end(), 0.0f);
-
         int idx = 0;
 
         // Ball Info (9 floats)
-        RocketSim::BallState ballState = arena->ball->GetState();
+        RocketSim::BallState ballStateCopy = ballState;
         if (inverted) {
-            ballState.pos.x *= -1;
-            ballState.pos.y *= -1;
-            ballState.vel.x *= -1;
-            ballState.vel.y *= -1;
-            ballState.angVel.x *= -1;
-            ballState.angVel.y *= -1;
+            ballStateCopy.pos.x *= -1;
+            ballStateCopy.pos.y *= -1;
+            ballStateCopy.vel.x *= -1;
+            ballStateCopy.vel.y *= -1;
+            ballStateCopy.angVel.x *= -1;
+            ballStateCopy.angVel.y *= -1;
         }
-        obs[idx++] = ballState.pos.x * POS_COEF;
-        obs[idx++] = ballState.pos.y * POS_COEF;
-        obs[idx++] = ballState.pos.z * POS_COEF;
-        obs[idx++] = ballState.vel.x * LIN_VEL_COEF;
-        obs[idx++] = ballState.vel.y * LIN_VEL_COEF;
-        obs[idx++] = ballState.vel.z * LIN_VEL_COEF;
-        obs[idx++] = ballState.angVel.x * ANG_VEL_COEF;
-        obs[idx++] = ballState.angVel.y * ANG_VEL_COEF;
-        obs[idx++] = ballState.angVel.z * ANG_VEL_COEF;
+        obs[idx++] = ballStateCopy.pos.x * POS_COEF;
+        obs[idx++] = ballStateCopy.pos.y * POS_COEF;
+        obs[idx++] = ballStateCopy.pos.z * POS_COEF;
+        obs[idx++] = ballStateCopy.vel.x * LIN_VEL_COEF;
+        obs[idx++] = ballStateCopy.vel.y * LIN_VEL_COEF;
+        obs[idx++] = ballStateCopy.vel.z * LIN_VEL_COEF;
+        obs[idx++] = ballStateCopy.angVel.x * ANG_VEL_COEF;
+        obs[idx++] = ballStateCopy.angVel.y * ANG_VEL_COEF;
+        obs[idx++] = ballStateCopy.angVel.z * ANG_VEL_COEF;
 
         // Boost Pad Timers (34 floats)
         for (int p = 0; p < boostPads.size(); ++p) {
@@ -227,40 +235,48 @@ std::array<std::array<float, RLEnv::OBS_SIZE>, RLEnv::NUM_AGENTS> RLEnv::_getObs
         std::copy(selfCarObs.begin(), selfCarObs.end(), obs.begin() + idx);
         idx += CAR_OBS_SIZE; // idx is now 72
 
-        // Allies & Enemies
-        std::vector<std::array<float, CAR_OBS_SIZE>> allies;
-        std::vector<std::array<float, CAR_OBS_SIZE>> enemies;
+        // Allies & Enemies - reuse member vectors
+        allies_.clear();
+        enemies_.clear();
 
         for (int j = 0; j < NUM_AGENTS; ++j) {
             if (i == j) continue; // Skip self
 
             RocketSim::Car* otherCar = cars[j];
             if (otherCar->team == car->team) {
-                allies.push_back(_generateCarObs(otherCar, inverted));
+                allies_.push_back(_generateCarObs(otherCar, inverted));
             } else {
-                enemies.push_back(_generateCarObs(otherCar, inverted));
+                enemies_.push_back(_generateCarObs(otherCar, inverted));
             }
         }
 
         // Allies + Pad (1 * 20 = 20 floats)
         int alliesToCopy = 0;
-        for (const auto& allyObs : allies) {
+        for (const auto& allyObs : allies_) {
             if (alliesToCopy >= (ZERO_PADDING - 1)) break;
             std::copy(allyObs.begin(), allyObs.end(), obs.begin() + idx);
             idx += CAR_OBS_SIZE;
             alliesToCopy++;
         }
-        idx += (ZERO_PADDING - 1 - alliesToCopy) * CAR_OBS_SIZE; // idx is now 92
+        // Zero out padding for unused ally slots
+        for (int p = alliesToCopy; p < (ZERO_PADDING - 1); ++p) {
+            std::fill(obs.begin() + idx, obs.begin() + idx + CAR_OBS_SIZE, 0.0f);
+            idx += CAR_OBS_SIZE;
+        }
 
         // Enemies + Pad (2 * 20 = 40 floats)
         int enemiesToCopy = 0;
-        for (const auto& enemyObs : enemies) {
+        for (const auto& enemyObs : enemies_) {
             if (enemiesToCopy >= ZERO_PADDING) break;
             std::copy(enemyObs.begin(), enemyObs.end(), obs.begin() + idx);
             idx += CAR_OBS_SIZE;
             enemiesToCopy++;
         }
-        idx += (ZERO_PADDING - enemiesToCopy) * CAR_OBS_SIZE; // idx is now 132
+        // Zero out padding for unused enemy slots
+        for (int p = enemiesToCopy; p < ZERO_PADDING; ++p) {
+            std::fill(obs.begin() + idx, obs.begin() + idx + CAR_OBS_SIZE, 0.0f);
+            idx += CAR_OBS_SIZE;
+        }
 
     }
 

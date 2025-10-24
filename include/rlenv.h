@@ -16,22 +16,6 @@ class RLEnv {
         void step(const std::array<int, 4>& actions, std::array<std::array<float, 138>, 4> &obs, float &reward, bool &terminated);
     private:
 
-        RocketSim::Arena* arena;
-        std::array<RocketSim::Car*, 4> cars;
-
-        std::mt19937 gen;
-        std::uniform_int_distribution<> kickoffDist;
-
-        void _resetToKickoff();
-
-        std::array<std::array<float, 138>, 4> _getObs();
-
-        std::array<float, 20> _generateCarObs(RocketSim::Car* car, bool inverted) const;
-
-        void _buildLookupTable();
-
-        std::vector<std::array<float, 8>> m_lookupTable;
-
         static constexpr int ACTION_REPEATS = 8;
 
         static constexpr float POS_COEF = 1.0f / 2300.0f;
@@ -45,5 +29,28 @@ class RLEnv {
         static constexpr int NUM_AGENTS = 4;
         static constexpr int CAR_OBS_SIZE = 20;
         static constexpr int BOOST_PAD_COUNT = 34;
-        static constexpr int OBS_SIZE = 138;
+        static constexpr int OBS_SIZE = 132;
+
+        RocketSim::Arena* arena;
+        std::array<RocketSim::Car*, 4> cars;
+
+        std::mt19937 gen;
+        std::uniform_int_distribution<> kickoffDist;
+
+        // Cached boost pads to avoid repeated allocations
+        std::vector<RocketSim::BoostPad*> boostPads_;
+
+        // Reusable buffers for allies/enemies to avoid repeated allocations
+        std::vector<std::array<float, CAR_OBS_SIZE>> allies_;
+        std::vector<std::array<float, CAR_OBS_SIZE>> enemies_;
+
+        void _resetToKickoff();
+
+        std::array<std::array<float, 138>, 4> _getObs();
+
+        std::array<float, 20> _generateCarObs(RocketSim::Car* car, bool inverted) const;
+
+        void _buildLookupTable();
+
+        std::vector<std::array<float, 8>> m_lookupTable;
 };
