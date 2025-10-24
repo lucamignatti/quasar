@@ -18,6 +18,7 @@ add_subdirectory(lib/RocketSim)
 add_executable(quasar
     src/main.cpp
     src/rlenv.cpp
+    src/vecenv.cpp
 )
 
 # --- Add Your Include Directory ---
