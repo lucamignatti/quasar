@@ -4,103 +4,41 @@
 #include "rlenv.h"
 #include <vector>
 #include <thread>
-#include <queue>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
 #include <memory>
-#include <optional>
+#include <array>
 
-// Thread-safe channel for inter-thread communication
-template<typename T>
-class Channel {
-public:
-    Channel(size_t capacity = 1) : capacity_(capacity), closed_(false) {}
-    
-    // Non-blocking send - returns false if channel is full
-    bool try_send(T&& value) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (closed_ || queue_.size() >= capacity_) {
-            return false;
-        }
-        queue_.push(std::move(value));
-        cv_.notify_one();
-        return true;
-    }
-    
-    // Blocking send - waits until space is available
-    void send(T&& value) {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]() { return closed_ || queue_.size() < capacity_; });
-        if (closed_) return;
-        queue_.push(std::move(value));
-        cv_.notify_one();
-    }
-    
-    // Non-blocking receive - returns empty optional if no data
-    std::optional<T> try_recv() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (queue_.empty()) {
-            return std::nullopt;
-        }
-        T value = std::move(queue_.front());
-        queue_.pop();
-        cv_.notify_one();
-        return value;
-    }
-    
-    // Blocking receive - waits until data is available
-    std::optional<T> recv() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]() { return !queue_.empty() || closed_; });
-        if (queue_.empty()) {
-            return std::nullopt;
-        }
-        T value = std::move(queue_.front());
-        queue_.pop();
-        cv_.notify_one();
-        return value;
-    }
-    
-    void close() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        closed_ = true;
-        cv_.notify_all();
-    }
-    
-private:
-    std::queue<T> queue_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    size_t capacity_;
-    bool closed_;
-};
+// Cache line size for alignment (avoid false sharing)
+constexpr size_t CACHE_LINE_SIZE = 64;
 
 // Commands that can be sent to environment threads
-enum class EnvCommand {
-    RESET,
-    STEP,
-    SHUTDOWN
+enum class EnvCommand : int {
+    IDLE = 0,
+    RESET = 1,
+    STEP = 2,
+    SHUTDOWN = 3
 };
 
-// Request structure for environment commands
-struct EnvRequest {
-    EnvCommand command;
-    std::array<int, 4> actions; // Only used for STEP command
-};
-
-// Response structure from environment threads
-struct EnvResponse {
+// Aligned observation buffer to avoid false sharing between threads
+struct alignas(CACHE_LINE_SIZE) ObservationBuffer {
     std::array<std::array<float, 138>, 4> observations;
     float reward;
     bool terminated;
-    bool success; // Whether the operation completed successfully
+};
+
+// Worker thread state - each worker has its own cache line
+struct alignas(CACHE_LINE_SIZE) WorkerState {
+    std::atomic<EnvCommand> command{EnvCommand::IDLE};
+    std::atomic<bool> ready{false};
+    std::array<int, 4> actions;
 };
 
 // Worker thread that manages a single RLEnv instance
 class EnvWorker {
 public:
-    EnvWorker(int worker_id);
+    EnvWorker(int worker_id, WorkerState* state, ObservationBuffer* obs_buffer);
     ~EnvWorker();
     
     // Delete copy/move constructors
@@ -109,33 +47,17 @@ public:
     EnvWorker(EnvWorker&&) = delete;
     EnvWorker& operator=(EnvWorker&&) = delete;
     
-    // Send a request to this worker (non-blocking)
-    bool send_request(EnvRequest&& request);
-    
-    // Try to receive a response from this worker (non-blocking)
-    std::optional<EnvResponse> try_recv_response();
-    
-    // Blocking receive response
-    std::optional<EnvResponse> recv_response();
-    
-    // Check if worker is ready for new request
-    bool is_ready() const { return ready_.load(); }
-    
     void shutdown();
     
 private:
     void worker_loop();
     
     int worker_id_;
+    WorkerState* state_;
+    ObservationBuffer* obs_buffer_;
     std::unique_ptr<RLEnv> env_;
     std::thread thread_;
-    
-    // Channels for bidirectional communication
-    Channel<EnvRequest> request_channel_;
-    Channel<EnvResponse> response_channel_;
-    
     std::atomic<bool> running_;
-    std::atomic<bool> ready_;
 };
 
 // Vectorized environment that manages multiple RLEnv instances in parallel
@@ -150,7 +72,7 @@ public:
     VecEnv(VecEnv&&) = delete;
     VecEnv& operator=(VecEnv&&) = delete;
     
-    // Reset all environments and return observations (optional - envs auto-reset on termination)
+    // Reset all environments and return observations
     // Environments are automatically initialized on construction
     // Shape: [num_envs, 4, 138]
     std::vector<std::array<std::array<float, 138>, 4>> reset();
@@ -169,7 +91,6 @@ public:
     > step(const std::vector<std::array<int, 4>>& actions);
     
     // Async step - send all step commands without waiting for results
-    // Environments automatically reset when terminated
     void step_async(const std::vector<std::array<int, 4>>& actions);
     
     // Wait for all async step results
@@ -191,6 +112,12 @@ public:
 private:
     int num_envs_;
     std::vector<std::unique_ptr<EnvWorker>> workers_;
+    
+    // Pre-allocated, cache-aligned buffers for observations
+    std::unique_ptr<ObservationBuffer[]> obs_buffers_;
+    
+    // Pre-allocated, cache-aligned worker states
+    std::unique_ptr<WorkerState[]> worker_states_;
     
     // Track which workers have pending async operations
     std::vector<bool> async_pending_;

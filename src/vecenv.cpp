@@ -3,14 +3,12 @@
 #include <algorithm>
 #include <chrono>
 
-
-EnvWorker::EnvWorker(int worker_id)
+EnvWorker::EnvWorker(int worker_id, WorkerState* state, ObservationBuffer* obs_buffer)
     : worker_id_(worker_id),
+      state_(state),
+      obs_buffer_(obs_buffer),
       env_(nullptr),
-      request_channel_(1),  // Buffer size of 1 for requests
-      response_channel_(1), // Buffer size of 1 for responses
-      running_(true),
-      ready_(false)
+      running_(true)
 {
     // Start the worker thread
     thread_ = std::thread(&EnvWorker::worker_loop, this);
@@ -20,30 +18,12 @@ EnvWorker::~EnvWorker() {
     shutdown();
 }
 
-bool EnvWorker::send_request(EnvRequest&& request) {
-    return request_channel_.try_send(std::move(request));
-}
-
-std::optional<EnvResponse> EnvWorker::try_recv_response() {
-    return response_channel_.try_recv();
-}
-
-std::optional<EnvResponse> EnvWorker::recv_response() {
-    return response_channel_.recv();
-}
-
 void EnvWorker::shutdown() {
     if (running_.load()) {
         running_.store(false);
         
         // Send shutdown command
-        EnvRequest shutdown_req;
-        shutdown_req.command = EnvCommand::SHUTDOWN;
-        request_channel_.send(std::move(shutdown_req));
-        
-        // Close channels
-        request_channel_.close();
-        response_channel_.close();
+        state_->command.store(EnvCommand::SHUTDOWN, std::memory_order_release);
         
         // Wait for thread to finish
         if (thread_.joinable()) {
@@ -58,42 +38,45 @@ void EnvWorker::worker_loop() {
         env_ = std::make_unique<RLEnv>();
         
         // Auto-reset on initialization
-        EnvResponse init_response;
-        env_->reset(init_response.observations);
+        env_->reset(obs_buffer_->observations);
+        obs_buffer_->reward = 0.0f;
+        obs_buffer_->terminated = false;
         
-        ready_.store(true);
+        // Mark as ready
+        state_->ready.store(true, std::memory_order_release);
         
-        while (running_.load()) {
-            // Wait for a request
-            auto request_opt = request_channel_.recv();
-            if (!request_opt.has_value()) {
-                break; // Channel closed
+        while (running_.load(std::memory_order_relaxed)) {
+            // Wait for a command using atomic operations
+            EnvCommand cmd = state_->command.load(std::memory_order_acquire);
+            
+            if (cmd == EnvCommand::IDLE) {
+                // No work to do, yield CPU
+                std::this_thread::yield();
+                continue;
             }
             
-            ready_.store(false);
-            EnvRequest& request = request_opt.value();
-            EnvResponse response;
-            response.success = true;
+            // Mark as busy
+            state_->ready.store(false, std::memory_order_relaxed);
             
-            switch (request.command) {
+            switch (cmd) {
                 case EnvCommand::RESET: {
-                    env_->reset(response.observations);
-                    response.reward = 0.0f;
-                    response.terminated = false;
+                    env_->reset(obs_buffer_->observations);
+                    obs_buffer_->reward = 0.0f;
+                    obs_buffer_->terminated = false;
                     break;
                 }
                 
                 case EnvCommand::STEP: {
                     env_->step(
-                        request.actions,
-                        response.observations,
-                        response.reward,
-                        response.terminated
+                        state_->actions,
+                        obs_buffer_->observations,
+                        obs_buffer_->reward,
+                        obs_buffer_->terminated
                     );
                     
                     // Auto-reset if environment terminated
-                    if (response.terminated) {
-                        env_->reset(response.observations);
+                    if (obs_buffer_->terminated) {
+                        env_->reset(obs_buffer_->observations);
                         // Keep terminated flag true so caller knows episode ended
                     }
                     break;
@@ -101,15 +84,17 @@ void EnvWorker::worker_loop() {
                 
                 case EnvCommand::SHUTDOWN: {
                     running_.store(false);
-                    response.success = false;
-                    response_channel_.send(std::move(response));
+                    state_->ready.store(true, std::memory_order_release);
                     return;
                 }
+                
+                case EnvCommand::IDLE:
+                    break;
             }
             
-            // Send response back
-            response_channel_.send(std::move(response));
-            ready_.store(true);
+            // Mark as ready and clear command
+            state_->command.store(EnvCommand::IDLE, std::memory_order_release);
+            state_->ready.store(true, std::memory_order_release);
         }
         
     } catch (const std::exception& e) {
@@ -130,24 +115,28 @@ VecEnv::VecEnv(int num_envs)
         throw std::invalid_argument("num_envs must be positive");
     }
     
+    // Allocate cache-aligned buffers
+    obs_buffers_ = std::unique_ptr<ObservationBuffer[]>(new ObservationBuffer[num_envs]);
+    worker_states_ = std::unique_ptr<WorkerState[]>(new WorkerState[num_envs]);
+    
     // Create all worker threads
     workers_.reserve(num_envs);
     for (int i = 0; i < num_envs; ++i) {
-        workers_.push_back(std::make_unique<EnvWorker>(i));
+        workers_.push_back(std::make_unique<EnvWorker>(i, &worker_states_[i], &obs_buffers_[i]));
     }
     
     // Wait for all workers to initialize
     bool all_ready = false;
     while (!all_ready) {
         all_ready = true;
-        for (const auto& worker : workers_) {
-            if (!worker->is_ready()) {
+        for (int i = 0; i < num_envs; ++i) {
+            if (!worker_states_[i].ready.load(std::memory_order_acquire)) {
                 all_ready = false;
                 break;
             }
         }
         if (!all_ready) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::yield();
         }
     }
 }
@@ -160,27 +149,26 @@ std::vector<std::array<std::array<float, 138>, 4>> VecEnv::reset() {
     std::vector<std::array<std::array<float, 138>, 4>> all_observations;
     all_observations.reserve(num_envs_);
     
-    // Send reset commands to all workers simultaneously (non-blocking)
+    // Send reset commands to all workers simultaneously
     for (int i = 0; i < num_envs_; ++i) {
-        EnvRequest request;
-        request.command = EnvCommand::RESET;
-        
-        while (!workers_[i]->send_request(std::move(request))) {
-            // Spin until we can send (worker is processing previous request)
+        // Wait for worker to be ready
+        while (!worker_states_[i].ready.load(std::memory_order_acquire)) {
             std::this_thread::yield();
-            request.command = EnvCommand::RESET; // Recreate request if send failed
         }
+        
+        // Issue reset command
+        worker_states_[i].command.store(EnvCommand::RESET, std::memory_order_release);
     }
     
-    // Collect responses from all workers
+    // Wait for all workers to complete
     for (int i = 0; i < num_envs_; ++i) {
-        auto response_opt = workers_[i]->recv_response();
-        
-        if (response_opt.has_value() && response_opt->success) {
-            all_observations.push_back(response_opt->observations);
-        } else {
-            throw std::runtime_error("Worker " + std::to_string(i) + " failed to reset");
+        // Wait for command to be cleared (indicating completion)
+        while (worker_states_[i].command.load(std::memory_order_acquire) != EnvCommand::IDLE) {
+            std::this_thread::yield();
         }
+        
+        // Copy observation from shared buffer
+        all_observations.push_back(obs_buffers_[i].observations);
     }
     
     return all_observations;
@@ -210,19 +198,18 @@ void VecEnv::step_async(const std::vector<std::array<int, 4>>& actions) {
         );
     }
     
-    // Send step commands to all workers simultaneously (non-blocking)
+    // Send step commands to all workers simultaneously
     for (int i = 0; i < num_envs_; ++i) {
-        EnvRequest request;
-        request.command = EnvCommand::STEP;
-        request.actions = actions[i];
-        
-        while (!workers_[i]->send_request(std::move(request))) {
-            // Spin until we can send
+        // Wait for worker to be ready (should already be ready in normal operation)
+        while (!worker_states_[i].ready.load(std::memory_order_acquire)) {
             std::this_thread::yield();
-            // Recreate request if send failed
-            request.command = EnvCommand::STEP;
-            request.actions = actions[i];
         }
+        
+        // Copy actions to worker's buffer
+        worker_states_[i].actions = actions[i];
+        
+        // Issue step command
+        worker_states_[i].command.store(EnvCommand::STEP, std::memory_order_release);
         
         async_pending_[i] = true;
     }
@@ -241,7 +228,7 @@ std::tuple<
     all_rewards.reserve(num_envs_);
     all_dones.reserve(num_envs_);
     
-    // Collect responses from all workers
+    // Wait for all workers to complete and collect results
     for (int i = 0; i < num_envs_; ++i) {
         if (!async_pending_[i]) {
             throw std::runtime_error(
@@ -250,15 +237,15 @@ std::tuple<
             );
         }
         
-        auto response_opt = workers_[i]->recv_response();
-        
-        if (response_opt.has_value() && response_opt->success) {
-            all_observations.push_back(response_opt->observations);
-            all_rewards.push_back(response_opt->reward);
-            all_dones.push_back(response_opt->terminated);
-        } else {
-            throw std::runtime_error("Worker " + std::to_string(i) + " failed to step");
+        // Wait for command to be cleared (indicating completion)
+        while (worker_states_[i].command.load(std::memory_order_acquire) != EnvCommand::IDLE) {
+            std::this_thread::yield();
         }
+        
+        // Copy results from shared buffers
+        all_observations.push_back(obs_buffers_[i].observations);
+        all_rewards.push_back(obs_buffers_[i].reward);
+        all_dones.push_back(obs_buffers_[i].terminated);
         
         async_pending_[i] = false;
     }
