@@ -1,13 +1,24 @@
 #include "vecenv.h"
 #include <chrono>
 
-int main() {
+int main(int argc, char* argv[]) {
 
-    int num_envs = 8;
+    int num_envs = 24;
     int max_steps = 10000;
+    int num_threads = 0; // 0 = auto (hardware_concurrency)
 
-    VecEnv vecenv(num_envs);
-    
+    if (argc > 1) {
+        num_envs = std::atoi(argv[1]);
+    }
+    if (argc > 2) {
+        max_steps = std::atoi(argv[2]);
+    }
+    if (argc > 3) {
+        num_threads = std::atoi(argv[3]);
+    }
+
+    VecEnv vecenv(num_envs, num_threads);
+
     std::vector<std::array<int, 4>> actions(num_envs);
     for (int i = 0; i < num_envs; i++) {
         for (int j = 0; j < 4; j++) {
