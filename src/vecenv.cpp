@@ -5,16 +5,20 @@
 #include <iostream>
 #include <string>
 
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#elif __APPLE__
+#include <pthread.h>
+#include <mach/thread_policy.h>
+#include <mach/thread_act.h>
+#endif
+
 
 BatchWorker::BatchWorker(int worker_id, int num_envs_in_batch)
     : worker_id_(worker_id), num_envs_(num_envs_in_batch)
 {
     envs_.reserve(num_envs_);
-
-    local_observations_.resize(num_envs_);
-    local_rewards_.resize(num_envs_);
-    local_dones_.resize(num_envs_);
-
     thread_ = std::thread(&BatchWorker::worker_loop, this);
 }
 
@@ -27,8 +31,8 @@ void BatchWorker::shutdown() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             running_.store(false);
-            command_ = WorkerCommand::SHUTDOWN;
-            work_ready_ = true;
+            worker_data_.command = WorkerCommand::SHUTDOWN;
+            worker_data_.work_ready = true;
         }
         cv_work_.notify_one();
 
@@ -42,11 +46,11 @@ void BatchWorker::reset_async(std::vector<std::array<std::array<float, 138>, 4>>
                                int start_idx) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        command_ = WorkerCommand::RESET;
+        worker_data_.command = WorkerCommand::RESET;
         observations_ = observations;
         start_idx_ = start_idx;
-        work_done_ = false;
-        work_ready_ = true;
+        worker_data_.work_done = false;
+        worker_data_.work_ready = true;
     }
     cv_work_.notify_one();
 }
@@ -60,26 +64,39 @@ void BatchWorker::step_async(
 {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        command_ = WorkerCommand::STEP;
+        worker_data_.command = WorkerCommand::STEP;
         actions_ = actions;
         observations_ = observations;
         rewards_ = rewards;
         dones_ = dones;
         start_idx_ = start_idx;
-        work_done_ = false;
-        work_ready_ = true;
+        worker_data_.work_done = false;
+        worker_data_.work_ready = true;
     }
     cv_work_.notify_one();
 }
 
 void BatchWorker::wait() {
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_done_.wait(lock, [this] { return work_done_; });
+    cv_done_.wait(lock, [this] { return worker_data_.work_done; });
 }
 
 void BatchWorker::worker_loop() {
     std::string thread_name = "worker/" + std::to_string(worker_id_);
     TRACE_THREAD_NAME(thread_name);
+
+    // Pin thread to specific CPU core
+#ifdef __linux__
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(worker_id_, &cpuset);
+    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#elif __APPLE__
+    thread_affinity_policy_data_t policy = { worker_id_ };
+    thread_policy_set(pthread_mach_thread_np(pthread_self()),
+                     THREAD_AFFINITY_POLICY,
+                     (thread_policy_t)&policy, 1);
+#endif
 
     {
         TRACE_SCOPE("worker_env_init");
@@ -94,14 +111,14 @@ void BatchWorker::worker_loop() {
         // Wait for work
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            cv_work_.wait(lock, [this] { return work_ready_ || !running_.load(); });
+            cv_work_.wait(lock, [this] { return worker_data_.work_ready || !running_.load(); });
 
             if (!running_.load()) {
                 break;
             }
 
-            cmd = command_;
-            work_ready_ = false;
+            cmd = worker_data_.command;
+            worker_data_.work_ready = false;
         }
 
         try {
@@ -116,26 +133,18 @@ void BatchWorker::worker_loop() {
 
                 case WorkerCommand::STEP: {
                     TRACE_SCOPE("worker_step");
-                    // Write to local buffers first
+                    // Write directly to shared buffers (cache-aligned, no false sharing)
                     for (int i = 0; i < num_envs_; ++i) {
                         int idx = start_idx_ + i;
                         bool terminated = false;
-                        envs_[i]->step((*actions_)[idx], local_observations_[i],
-                                      local_rewards_[i], terminated);
-                        local_dones_[i] = terminated ? 1 : 0;
+                        envs_[i]->step((*actions_)[idx], (*observations_)[idx],
+                                      (*rewards_)[idx], terminated);
+                        (*dones_)[idx] = terminated ? 1 : 0;
 
                         // reset on termination
                         if (terminated) {
-                            envs_[i]->reset(local_observations_[i]);
+                            envs_[i]->reset((*observations_)[idx]);
                         }
-                    }
-
-                    // Copy local results to shared buffers once at the end
-                    for (int i = 0; i < num_envs_; ++i) {
-                        int idx = start_idx_ + i;
-                        (*observations_)[idx] = local_observations_[i];
-                        (*rewards_)[idx] = local_rewards_[i];
-                        (*dones_)[idx] = local_dones_[i];
                     }
                     break;
                 }
@@ -154,8 +163,8 @@ void BatchWorker::worker_loop() {
         // Signal completion
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            work_done_ = true;
-            command_ = WorkerCommand::IDLE;
+            worker_data_.work_done = true;
+            worker_data_.command = WorkerCommand::IDLE;
         }
         cv_done_.notify_one();
     }
@@ -180,6 +189,7 @@ VecEnv::VecEnv(int num_envs, int num_threads)
 
     envs_per_thread_ = (num_envs + num_threads_ - 1) / num_threads_;
 
+    // Allocate with aligned allocator
     all_observations_.resize(num_envs_);
     all_rewards_.resize(num_envs_);
     all_dones_.resize(num_envs_);
@@ -230,11 +240,13 @@ std::tuple<
         );
     }
 
+    // Dispatch all work at once with minimal locking
     for (size_t t = 0; t < workers_.size(); ++t) {
         int start_env = t * envs_per_thread_;
         workers_[t]->step_async(&actions, &all_observations_, &all_rewards_, &all_dones_, start_env);
     }
 
+    // Wait for all workers to complete
     for (auto& worker : workers_) {
         worker->wait();
     }

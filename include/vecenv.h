@@ -10,12 +10,23 @@
 #include <condition_variable>
 #include <atomic>
 
+// Cache line size for alignment
+constexpr size_t CACHE_LINE_SIZE = 64;
+
 // Commands for worker threads
-enum class WorkerCommand {
+enum class WorkerCommand : uint32_t {
     IDLE,
     RESET,
     STEP,
     SHUTDOWN
+};
+
+// Cache-aligned data structure to prevent false sharing
+struct alignas(CACHE_LINE_SIZE) WorkerData {
+    WorkerCommand command{WorkerCommand::IDLE};
+    bool work_ready{false};
+    bool work_done{true};
+    char padding[CACHE_LINE_SIZE - sizeof(WorkerCommand) - 2];
 };
 
 class BatchWorker {
@@ -54,25 +65,18 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{true};
 
-    // Command synchronization
-    std::mutex mutex_;
+    // Command synchronization with cache line alignment
+    alignas(CACHE_LINE_SIZE) std::mutex mutex_;
     std::condition_variable cv_work_;
     std::condition_variable cv_done_;
-    WorkerCommand command_{WorkerCommand::IDLE};
-    bool work_ready_{false};
-    bool work_done_{true};
+    alignas(CACHE_LINE_SIZE) WorkerData worker_data_;
 
     // Pointers to shared data buffers and starting index
-    int start_idx_{0};
+    alignas(CACHE_LINE_SIZE) int start_idx_{0};
     const std::vector<std::array<int, 4>>* actions_{nullptr};
     std::vector<std::array<std::array<float, 138>, 4>>* observations_{nullptr};
     std::vector<float>* rewards_{nullptr};
     std::vector<uint8_t>* dones_{nullptr};
-
-    // Local output buffers to avoid false sharing (Change 3)
-    std::vector<std::array<std::array<float, 138>, 4>> local_observations_;
-    std::vector<float> local_rewards_;
-    std::vector<uint8_t> local_dones_;
 };
 
 class VecEnv {
@@ -108,7 +112,7 @@ private:
 
     std::vector<std::unique_ptr<BatchWorker>> workers_;
 
-    // Pre-allocated buffers (Change 1: reuse buffers)
+    // Pre-allocated buffers - cache-aligned via environment distribution
     std::vector<std::array<std::array<float, 138>, 4>> all_observations_;
     std::vector<float> all_rewards_;
     std::vector<uint8_t> all_dones_;
