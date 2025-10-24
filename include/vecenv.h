@@ -69,6 +69,11 @@ private:
     std::vector<std::array<std::array<float, 138>, 4>>* observations_{nullptr};
     std::vector<float>* rewards_{nullptr};
     std::vector<uint8_t>* dones_{nullptr};
+
+    // Local output buffers to avoid false sharing (Change 3)
+    std::vector<std::array<std::array<float, 138>, 4>> local_observations_;
+    std::vector<float> local_rewards_;
+    std::vector<uint8_t> local_dones_;
 };
 
 class VecEnv {
@@ -103,6 +108,11 @@ private:
     int envs_per_thread_;
 
     std::vector<std::unique_ptr<BatchWorker>> workers_;
+
+    // Pre-allocated buffers (Change 1: reuse buffers)
+    std::vector<std::array<std::array<float, 138>, 4>> all_observations_;
+    std::vector<float> all_rewards_;
+    std::vector<uint8_t> all_dones_;
 };
 
 #endif

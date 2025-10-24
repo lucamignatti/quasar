@@ -5,7 +5,7 @@ int main(int argc, char* argv[]) {
 
     int num_envs = 24;
     int max_steps = 10000;
-    int num_threads = 0; // 0 = auto (hardware_concurrency)
+    int num_threads = 0;
 
     if (argc > 1) {
         num_envs = std::atoi(argv[1]);
@@ -28,7 +28,8 @@ int main(int argc, char* argv[]) {
 
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
 
-    for (int step = 0; step < max_steps; step++) {
+    int steps_per_env = (max_steps + num_envs - 1) / num_envs;
+    for (int step = 0; step < steps_per_env; step++) {
         auto [obs, rewards, dones] = vecenv.step(actions);
     }
 
@@ -36,7 +37,7 @@ int main(int argc, char* argv[]) {
 
     std::chrono::duration<double> double_seconds = stop - start;
 
-    int total_steps = max_steps * num_envs;
+    int total_steps = steps_per_env * num_envs;
 
     std::cout << "Simulated " << total_steps << " steps in " << double_seconds.count() << " seconds, averaging " << total_steps/double_seconds.count() << " steps per second." << std::endl;
 

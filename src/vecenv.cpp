@@ -13,6 +13,11 @@ BatchWorker::BatchWorker(int worker_id, int num_envs_in_batch)
         envs_.push_back(std::make_unique<RLEnv>());
     }
 
+    // Pre-allocate local buffers (Change 3: local buffers to avoid false sharing)
+    local_observations_.resize(num_envs_);
+    local_rewards_.resize(num_envs_);
+    local_dones_.resize(num_envs_);
+
     // Start persistent worker thread
     thread_ = std::thread(&BatchWorker::worker_loop, this);
 }
@@ -103,17 +108,26 @@ void BatchWorker::worker_loop() {
                 }
 
                 case WorkerCommand::STEP: {
+                    // Write to local buffers first (Change 3: avoid false sharing)
                     for (int i = 0; i < num_envs_; ++i) {
                         int idx = start_idx_ + i;
                         bool terminated = false;
-                        envs_[i]->step((*actions_)[idx], (*observations_)[idx],
-                                      (*rewards_)[idx], terminated);
-                        (*dones_)[idx] = terminated ? 1 : 0;
+                        envs_[i]->step((*actions_)[idx], local_observations_[i],
+                                      local_rewards_[i], terminated);
+                        local_dones_[i] = terminated ? 1 : 0;
 
                         // reset on termination
                         if (terminated) {
-                            envs_[i]->reset((*observations_)[idx]);
+                            envs_[i]->reset(local_observations_[i]);
                         }
+                    }
+                    
+                    // Copy local results to shared buffers once at the end
+                    for (int i = 0; i < num_envs_; ++i) {
+                        int idx = start_idx_ + i;
+                        (*observations_)[idx] = local_observations_[i];
+                        (*rewards_)[idx] = local_rewards_[i];
+                        (*dones_)[idx] = local_dones_[i];
                     }
                     break;
                 }
@@ -157,6 +171,11 @@ VecEnv::VecEnv(int num_envs, int num_threads)
     num_threads_ = std::min(num_threads_, num_envs);
 
     envs_per_thread_ = (num_envs + num_threads_ - 1) / num_threads_;
+
+    // Change 1: Pre-allocate buffers once
+    all_observations_.resize(num_envs_);
+    all_rewards_.resize(num_envs_);
+    all_dones_.resize(num_envs_);
 
     // Create workers with persistent threads
     workers_.reserve(num_threads_);
@@ -204,13 +223,12 @@ std::tuple<
         );
     }
 
-    std::vector<std::array<std::array<float, 138>, 4>> all_observations(num_envs_);
-    std::vector<float> all_rewards(num_envs_);
-    std::vector<uint8_t> all_dones(num_envs_);
+    // Change 1: Reuse pre-allocated buffers instead of allocating every call
+    // No allocation here - buffers already sized in constructor
 
     for (size_t t = 0; t < workers_.size(); ++t) {
         int start_env = t * envs_per_thread_;
-        workers_[t]->step_async(&actions, &all_observations, &all_rewards, &all_dones, start_env);
+        workers_[t]->step_async(&actions, &all_observations_, &all_rewards_, &all_dones_, start_env);
     }
 
     for (auto& worker : workers_) {
@@ -218,8 +236,8 @@ std::tuple<
     }
 
     return std::make_tuple(
-        std::move(all_observations),
-        std::move(all_rewards),
-        std::move(all_dones)
+        all_observations_,
+        all_rewards_,
+        all_dones_
     );
 }
