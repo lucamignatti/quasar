@@ -1,7 +1,9 @@
 #include "vecenv.h"
 #include "tracing.h"
+#include "RocketSim.h"
 #include <chrono>
 #include <iostream>
+#include <filesystem>
 
 int main(int argc, char* argv[]) {
 
@@ -29,6 +31,18 @@ int main(int argc, char* argv[]) {
         // Overall program scope
         TRACE_SCOPE("program");
 
+        // Initialize RocketSim once for the entire process (not per-env)
+        {
+            TRACE_SCOPE("rocketsim_init");
+            std::filesystem::path meshesPath = "collision_meshes";
+            if (!std::filesystem::exists(meshesPath)) {
+                std::cerr << "ERROR: Meshes path not found. Please run collision_mesh_downloader.py" << std::endl;
+                return 1;
+            }
+            RocketSim::Init(meshesPath, true);
+        }
+
+        // Create VecEnv (envs will be initialized in parallel in worker threads)
         VecEnv vecenv(num_envs, num_threads);
 
         std::vector<std::array<int, 4>> actions(num_envs);

@@ -9,18 +9,15 @@
 BatchWorker::BatchWorker(int worker_id, int num_envs_in_batch)
     : worker_id_(worker_id), num_envs_(num_envs_in_batch)
 {
-    // Pre-allocate all environments
+    // Reserve space but don't create environments yet - will be created in worker thread
     envs_.reserve(num_envs_);
-    for (int i = 0; i < num_envs_; ++i) {
-        envs_.push_back(std::make_unique<RLEnv>());
-    }
 
     // Pre-allocate local buffers (Change 3: local buffers to avoid false sharing)
     local_observations_.resize(num_envs_);
     local_rewards_.resize(num_envs_);
     local_dones_.resize(num_envs_);
 
-    // Start persistent worker thread
+    // Start persistent worker thread (envs will be created there in parallel)
     thread_ = std::thread(&BatchWorker::worker_loop, this);
 }
 
@@ -87,6 +84,14 @@ void BatchWorker::worker_loop() {
     // Set thread name for tracing UI
     std::string thread_name = "worker/" + std::to_string(worker_id_);
     TRACE_THREAD_NAME(thread_name);
+    
+    // Create environments in parallel in this worker thread (not on main thread)
+    {
+        TRACE_SCOPE("worker_env_init");
+        for (int i = 0; i < num_envs_; ++i) {
+            envs_.push_back(std::make_unique<RLEnv>());
+        }
+    }
     
     while (running_.load()) {
         WorkerCommand cmd;

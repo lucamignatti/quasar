@@ -60,64 +60,29 @@ public:
             return;
         }
         outfile_ << "[";
-        first_event_ = true;
+        first_event_.store(true);
         start_time_ = Clock::now();
         started_.store(true);
     }
 
-    // Stop tracing and flush all thread buffers.
+    // Stop tracing - just close the file (events already written during execution)
     void Stop() {
         if (!started_.exchange(false)) return;
 
-        // Gather all thread buffers
-        std::vector<std::vector<Event>*> buffers;
-        {
-            std::lock_guard<std::mutex> lk(mutex_);
-            for (auto& kv : thread_buffers_) {
-                buffers.push_back(kv.second);
-            }
-        }
-
-        // Collect and sort all events by timestamp
-        std::vector<Event> all_events;
-        for (auto* buf : buffers) {
-            if (buf) {
-                for (const auto& e : *buf) {
-                    all_events.push_back(e);
-                }
-            }
-        }
-
-        std::sort(all_events.begin(), all_events.end(), [](const Event& a, const Event& b) {
-            if (a.ts != b.ts) return a.ts < b.ts;
-            if (a.tid != b.tid) return a.tid < b.tid;
-            return a.name < b.name;
-        });
-
-        // Write all events
-        {
-            std::lock_guard<std::mutex> lk(mutex_);
-            if (!outfile_.is_open()) return;
-
-            for (const auto& e : all_events) {
-                write_event(e);
-            }
-
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (outfile_.is_open()) {
             outfile_ << "]\n";
             outfile_.close();
         }
 
         // Clean up thread buffers
-        {
-            std::lock_guard<std::mutex> lk(mutex_);
-            for (auto& kv : thread_buffers_) {
-                delete kv.second;
-            }
-            thread_buffers_.clear();
+        for (auto& kv : thread_buffers_) {
+            delete kv.second;
         }
+        thread_buffers_.clear();
     }
 
-    // Record an event into the calling thread's buffer
+    // Record an event - write directly to file (streaming, no buffering)
     void Record(const std::string& name, char ph) {
         if (!started_.load(std::memory_order_acquire)) return;
         
@@ -127,7 +92,8 @@ public:
         e.ts = timestamp_us();
         e.tid = thread_id_hash();
         
-        get_thread_buffer()->push_back(std::move(e));
+        // Write event immediately to file instead of buffering
+        write_event(e);
     }
 
     bool IsStarted() const { return started_.load(); }
@@ -175,10 +141,13 @@ private:
     }
 
     void write_event(const Event& e) {
-        if (!first_event_) {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (!outfile_.is_open()) return;
+
+        bool was_first = first_event_.exchange(false);
+        if (!was_first) {
             outfile_ << ",";
         }
-        first_event_ = false;
 
         outfile_ << "{";
         if (e.ph == 'M') {
@@ -198,28 +167,19 @@ private:
             outfile_ << "\"tid\":" << e.tid;
         }
         outfile_ << "}";
-    }
-
-    std::vector<Event>* get_thread_buffer() {
-        uint64_t tid = thread_id_hash();
-        
-        std::lock_guard<std::mutex> lk(mutex_);
-        auto it = thread_buffers_.find(tid);
-        if (it == thread_buffers_.end()) {
-            auto* buf = new std::vector<Event>();
-            buf->reserve(4096);  // Pre-allocate to reduce allocations
-            thread_buffers_[tid] = buf;
-            return buf;
+        // Flush every N events to reduce I/O overhead while keeping streaming benefits
+        if (++event_count_ % 100 == 0) {
+            outfile_.flush();
         }
-        return it->second;
     }
 
     std::atomic<bool> started_;
+    std::atomic<bool> first_event_;
     Clock::time_point start_time_;
     std::ofstream outfile_;
-    bool first_event_;
     mutable std::mutex mutex_;
-    std::unordered_map<uint64_t, std::vector<Event>*> thread_buffers_;
+    std::unordered_map<uint64_t, std::vector<Event>*> thread_buffers_; // Keep for cleanup only
+    uint64_t event_count_{0};
 };
 
 // RAII scope tracer

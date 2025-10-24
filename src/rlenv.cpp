@@ -10,12 +10,7 @@ RLEnv::RLEnv()
     : gen(std::random_device{}()),
       kickoffDist(0, 2)
 {
-    std::filesystem::path meshesPath = "collision_meshes";
-    if (!std::filesystem::exists(meshesPath)) {
-        std::cerr << "ERROR: Meshes path not found. Please run collision_mesh_downloader.py" << std::endl;
-        exit(1);
-    }
-    RocketSim::Init(meshesPath, true);
+    // RocketSim::Init is now called once in main.cpp before VecEnv creation
     arena = RocketSim::Arena::Create(RocketSim::GameMode::SOCCAR);
 
     for (int i = 0; i < 4; i++) {
