@@ -39,6 +39,9 @@ struct TrainingConfig {
 
     // Misc
     bool use_cuda = false;
+    bool use_rocm = false;
+    bool use_mps = false;
+    bool use_mixed_precision = false;
     int log_interval = 10;
     bool deterministic = false;
 
@@ -68,6 +71,9 @@ struct TrainingConfig {
         std::cout << "  num_hidden_layers: " << num_hidden_layers << "\n";
         std::cout << "\nMisc:\n";
         std::cout << "  use_cuda: " << (use_cuda ? "true" : "false") << "\n";
+        std::cout << "  use_rocm: " << (use_rocm ? "true" : "false") << "\n";
+        std::cout << "  use_mps: " << (use_mps ? "true" : "false") << "\n";
+        std::cout << "  use_mixed_precision: " << (use_mixed_precision ? "true" : "false") << "\n";
         std::cout << "  log_interval: " << log_interval << "\n";
         std::cout << "  deterministic: " << (deterministic ? "true" : "false") << "\n";
         std::cout << "==============================\n\n";
@@ -101,6 +107,9 @@ void print_usage(const char* program_name) {
     std::cout << "    --num-hidden-layers N     Number of hidden layers (default: 2)\n";
     std::cout << "\n  Misc:\n";
     std::cout << "    --cuda                    Use CUDA if available (default: CPU)\n";
+    std::cout << "    --rocm                    Use ROCm/HIP if available (default: CPU)\n";
+    std::cout << "    --mps                     Use Metal Performance Shaders (Apple) if available\n";
+    std::cout << "    --mixed-precision         Enable mixed precision training (FP16)\n";
     std::cout << "    --log-interval N          Log every N updates (default: 10)\n";
     std::cout << "    --deterministic           Use deterministic actions (for evaluation)\n";
     std::cout << "    --help                    Show this help message\n";
@@ -173,6 +182,15 @@ TrainingConfig parse_args(int argc, char* argv[]) {
         }
         else if (arg == "--cuda") {
             config.use_cuda = true;
+        }
+        else if (arg == "--rocm") {
+            config.use_rocm = true;
+        }
+        else if (arg == "--mps") {
+            config.use_mps = true;
+        }
+        else if (arg == "--mixed-precision") {
+            config.use_mixed_precision = true;
         }
         else if (arg == "--log-interval" && i + 1 < argc) {
             config.log_interval = std::atoi(argv[++i]);
@@ -278,11 +296,16 @@ int main(int argc, char* argv[]) {
         ppo_config.num_epochs = config.num_epochs;
         ppo_config.batch_size = config.batch_size;
         ppo_config.n_steps = config.n_steps;
+        ppo_config.n_envs = config.num_envs;
+        ppo_config.use_mixed_precision = config.use_mixed_precision;
 
-        // Check for CUDA
-        if (config.use_cuda && torch::cuda::is_available()) {
-            ppo_config.device = torch::kCUDA;
-            std::cout << "Using CUDA device" << std::endl;
+        // Device selection priority: MPS > ROCm/CUDA > CPU
+        if (config.use_mps) {
+            ppo_config.device = torch::kMPS;
+            std::cout << "Requesting MPS device" << std::endl;
+        } else if (config.use_rocm || config.use_cuda) {
+            ppo_config.device = torch::kCUDA;  // ROCm uses CUDA API in PyTorch
+            std::cout << "Requesting " << (config.use_rocm ? "ROCm" : "CUDA") << " device" << std::endl;
         } else {
             ppo_config.device = torch::kCPU;
             std::cout << "Using CPU device" << std::endl;
@@ -327,9 +350,8 @@ int main(int argc, char* argv[]) {
             while (total_steps < config.max_steps) {
                 // Collect rollout
                 for (int step = 0; step < config.n_steps; ++step) {
-                    // Get actions from policy
-                    auto [actions, log_probs, entropy] = ppo.get_action(obs, config.deterministic);
-                    auto values = ppo.get_value(obs);
+                    // Get actions and values in one forward pass (optimized)
+                    auto [actions, log_probs, entropy, values] = ppo.get_action_and_value(obs, config.deterministic);
 
                     // Step environment
                     auto actions_discrete = tensor_to_actions(actions);

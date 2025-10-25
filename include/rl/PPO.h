@@ -7,20 +7,6 @@
 
 namespace rl {
 
-// Experience buffer for storing rollout data
-struct ExperienceBuffer {
-    std::vector<torch::Tensor> observations;
-    std::vector<torch::Tensor> actions;
-    std::vector<torch::Tensor> log_probs;
-    std::vector<torch::Tensor> rewards;
-    std::vector<torch::Tensor> dones;
-    std::vector<torch::Tensor> values;
-    
-    void clear();
-    size_t size() const;
-    bool is_empty() const;
-};
-
 // PPO training statistics
 struct PPOStats {
     float policy_loss = 0.0f;
@@ -35,7 +21,7 @@ struct PPOStats {
     void print() const;
 };
 
-// PPO Algorithm Implementation
+// PPO Algorithm Implementation with GPU-optimized buffers
 class PPO {
 public:
     struct Config {
@@ -58,7 +44,13 @@ public:
         int num_epochs = 4;               // PPO epochs per update
         int batch_size = 256;             // Minibatch size
         int n_steps = 2048;               // Steps per rollout
+        int n_envs = 1;                   // Number of parallel environments
         bool normalize_advantages = true;  // Normalize advantages
+        
+        // Performance options
+        bool use_mixed_precision = false; // FP16 training (ROCm/CUDA)
+        bool use_jit = false;             // TorchScript compilation
+        bool pin_memory = false;          // Pinned memory for transfers
         
         // Device
         torch::DeviceType device = torch::kCPU;
@@ -67,7 +59,7 @@ public:
     explicit PPO(const Config& config);
     ~PPO() = default;
     
-    // Store a transition in the experience buffer
+    // Store a transition in the experience buffer (GPU-resident)
     void store_transition(
         const torch::Tensor& obs,
         const torch::Tensor& action,
@@ -77,7 +69,7 @@ public:
         const torch::Tensor& value
     );
     
-    // Compute advantages and returns using GAE
+    // Compute advantages and returns using vectorized GAE
     void compute_advantages(const torch::Tensor& last_values);
     
     // Update policy using collected experience
@@ -90,6 +82,11 @@ public:
     
     // Get value estimate
     torch::Tensor get_value(const torch::Tensor& obs);
+    
+    // Get both action and value in one forward pass (optimized)
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> get_action_and_value(
+        const torch::Tensor& obs,
+        bool deterministic = false);
     
     // Check if buffer is ready for update
     bool is_ready_for_update() const;
@@ -111,20 +108,37 @@ public:
     // Set learning rate (for LR scheduling)
     void set_learning_rate(float lr);
     
+    // Clear buffer (useful for manual control)
+    void clear_buffer();
+    
 private:
     Config config_;
     MLP policy_;
     torch::optim::Adam optimizer_;
     torch::Device device_;
     
-    ExperienceBuffer buffer_;
-    std::vector<torch::Tensor> advantages_;
-    std::vector<torch::Tensor> returns_;
+    // GPU-resident preallocated buffers
+    torch::Tensor buffer_observations_;   // [n_steps, n_envs, obs_size]
+    torch::Tensor buffer_actions_;        // [n_steps, n_envs, action_size]
+    torch::Tensor buffer_log_probs_;      // [n_steps, n_envs]
+    torch::Tensor buffer_rewards_;        // [n_steps, n_envs]
+    torch::Tensor buffer_dones_;          // [n_steps, n_envs]
+    torch::Tensor buffer_values_;         // [n_steps, n_envs]
     
-    // Compute returns and advantages using GAE
-    void compute_gae(const torch::Tensor& last_values);
+    // Computed advantage/return buffers
+    torch::Tensor advantages_;            // [n_steps, n_envs]
+    torch::Tensor returns_;               // [n_steps, n_envs]
     
-    // Single PPO update epoch
+    int64_t buffer_pos_;                  // Current position in buffer
+    bool buffer_full_;                    // Whether buffer is full
+    
+    // Preallocate buffers
+    void allocate_buffers();
+    
+    // Compute returns and advantages using vectorized GAE (GPU-optimized)
+    void compute_gae_vectorized(const torch::Tensor& last_values);
+    
+    // Single PPO update epoch with optimizations
     PPOStats update_epoch(
         const torch::Tensor& obs,
         const torch::Tensor& actions,
@@ -133,11 +147,17 @@ private:
         const torch::Tensor& returns
     );
     
-    // Helper to create minibatches
-    std::vector<std::vector<int64_t>> create_minibatch_indices(
+    // GPU-based minibatch sampling
+    std::vector<torch::Tensor> create_minibatch_masks(
         int64_t total_samples, 
         int64_t batch_size
     );
+    
+    // Compile model with TorchScript (if enabled)
+    void compile_model();
+    
+    // Device detection helper
+    static torch::Device detect_device(torch::DeviceType device_type);
 };
 
 } // namespace rl

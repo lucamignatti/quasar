@@ -57,7 +57,6 @@ void MLPImpl::build_networks() {
     }
     
     // Special initialization for actor and critic output layers
-    // Get the last Linear layer in actor_mean (index 0 in the Sequential)
     auto actor_modules = actor_mean_->named_children();
     for (auto& pair : actor_modules) {
         if (auto* linear = pair.value()->as<torch::nn::Linear>()) {
@@ -85,10 +84,24 @@ torch::Tensor MLPImpl::forward_critic(torch::Tensor x) {
     return critic_->forward(features);
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::forward_actor_critic(torch::Tensor x) {
+    // Optimized: compute shared features once
+    auto features = shared_net_->forward(x);
+    
+    // Actor head
+    auto action_mean = actor_mean_->forward(features);
+    auto action_log_std = action_log_std_.expand_as(action_mean);
+    
+    // Critic head
+    auto values = critic_->forward(features);
+    
+    return std::make_tuple(action_mean, action_log_std, values);
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::get_action(
     torch::Tensor obs, bool deterministic) {
     
-    torch::NoGradGuard no_grad;
+    torch::InferenceMode guard;
     
     auto [action_mean, action_log_std] = forward_actor(obs);
     
@@ -118,15 +131,46 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::get_action(
     return std::make_tuple(actions, log_probs, entropy);
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::get_action_and_value(
+    torch::Tensor obs, bool deterministic) {
+    
+    torch::InferenceMode guard;
+    
+    auto [action_mean, action_log_std, values] = forward_actor_critic(obs);
+    
+    if (deterministic) {
+        // Return mean action for evaluation
+        auto log_probs = torch::zeros({obs.size(0)}, obs.options());
+        auto entropy = torch::zeros({obs.size(0)}, obs.options());
+        return std::make_tuple(action_mean, log_probs, entropy, values.squeeze(-1));
+    }
+    
+    // Sample from Gaussian distribution
+    auto action_std = torch::exp(action_log_std);
+    auto normal = torch::randn_like(action_mean);
+    auto actions = action_mean + action_std * normal;
+    
+    // Compute log probabilities
+    auto log_probs = -0.5 * torch::pow((actions - action_mean) / action_std, 2) 
+                     - action_log_std 
+                     - 0.5 * std::log(2.0 * M_PI);
+    log_probs = log_probs.sum(-1);
+    
+    // Compute entropy
+    auto entropy = 0.5 * (std::log(2.0 * M_PI * M_E) + 2.0 * action_log_std);
+    entropy = entropy.sum(-1);
+    
+    return std::make_tuple(actions, log_probs, entropy, values.squeeze(-1));
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::evaluate_actions(
     torch::Tensor obs, torch::Tensor actions) {
     
-    auto [action_mean, action_log_std] = forward_actor(obs);
-    auto values = forward_critic(obs);
+    auto [action_mean, action_log_std, values] = forward_actor_critic(obs);
     
     // Compute log probabilities for given actions
     auto action_std = torch::exp(action_log_std);
-    auto log_probs = -0.5 * torch::pow((actions - action_mean) / action_std, 2) 
+    auto log_probs = -0.5 * torch::pow((actions - action_mean) / action_std, 2)
                      - action_log_std 
                      - 0.5 * std::log(2.0 * M_PI);
     log_probs = log_probs.sum(-1);
@@ -139,7 +183,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> MLPImpl::evaluate_action
 }
 
 torch::Tensor MLPImpl::get_value(torch::Tensor obs) {
-    torch::NoGradGuard no_grad;
+    torch::InferenceMode guard;
     return forward_critic(obs).squeeze(-1);
 }
 

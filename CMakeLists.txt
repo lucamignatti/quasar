@@ -23,13 +23,18 @@ endif()
 if(CMAKE_BUILD_TYPE MATCHES Release)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         # Aggressive optimization for Release builds
-        add_compile_options(-O3 -march=native -DNDEBUG -flto)
+        add_compile_options(-O3 -march=native -DNDEBUG -flto -ffast-math)
         add_link_options(-flto)
-        message(STATUS "Compiler optimizations: -O3 -march=native -flto")
+        message(STATUS "Compiler optimizations: -O3 -march=native -flto -ffast-math")
+
+        # Additional optimizations for vectorization
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+            add_compile_options(-fvectorize -fslp-vectorize)
+        endif()
     elseif(MSVC)
-        add_compile_options(/O2 /DNDEBUG /GL)
+        add_compile_options(/O2 /DNDEBUG /GL /fp:fast)
         add_link_options(/LTCG)
-        message(STATUS "Compiler optimizations: /O2 /GL /LTCG")
+        message(STATUS "Compiler optimizations: /O2 /GL /LTCG /fp:fast")
     endif()
 elseif(CMAKE_BUILD_TYPE MATCHES Debug)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -79,6 +84,25 @@ if(TARGET Torch::Torch)
     target_link_libraries(quasar PRIVATE Torch::Torch)
 else()
     target_link_libraries(quasar PRIVATE "${TORCH_LIBRARIES}")
+endif()
+
+# ROCm/HIP detection and optimizations
+if(TORCH_HIP_VERSION OR EXISTS "${TORCH_INSTALL_PREFIX}/lib/libtorch_hip.so")
+    message(STATUS "ROCm/HIP detected - enabling ROCm optimizations")
+    target_compile_definitions(quasar PRIVATE USE_ROCM=1)
+    # Enable fast math for ROCm
+    if(CMAKE_BUILD_TYPE MATCHES Release)
+        target_compile_options(quasar PRIVATE -ffast-math)
+    endif()
+elseif(APPLE)
+    message(STATUS "Apple platform detected - MPS support available")
+    target_compile_definitions(quasar PRIVATE USE_MPS=1)
+endif()
+
+# Enable CUDA-specific optimizations if available
+if(TORCH_CUDA_VERSION)
+    message(STATUS "CUDA detected: ${TORCH_CUDA_VERSION}")
+    target_compile_definitions(quasar PRIVATE USE_CUDA=1)
 endif()
 
 if (MSVC)

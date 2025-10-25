@@ -20,10 +20,20 @@ public:
     // Forward pass for critic (value network)
     // Returns: state value
     torch::Tensor forward_critic(torch::Tensor x);
+    
+    // Combined forward pass (optimized - shares feature extraction)
+    // Returns: tuple of (action_mean, action_log_std, values)
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> forward_actor_critic(torch::Tensor x);
 
     // Get action from policy network
     // Returns: tuple of (actions, log_probs, entropy)
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> get_action(torch::Tensor obs, bool deterministic = false);
+    
+    // Get action and value in one forward pass (optimized)
+    // Returns: tuple of (actions, log_probs, entropy, values)
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> get_action_and_value(
+        torch::Tensor obs, 
+        bool deterministic = false);
 
     // Evaluate actions (for PPO update)
     // Returns: tuple of (log_probs, entropy, values)
