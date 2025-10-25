@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
 project(quasar CXX)
 
@@ -11,7 +11,8 @@ endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
-option(ENABLE_TRACING "Enable performance tracing (chrome://tracing compatible)" OFF)
+option(ENABLE_TRACING "Enable performance tracing" OFF)
+option(LIBTORCH_USE_CXX11_ABI "Set _GLIBCXX_USE_CXX11_ABI for libtorch compatibility (0 or 1). Leave empty to not set." "")
 
 if(ENABLE_TRACING)
     message(STATUS "Performance tracing: ENABLED")
@@ -42,8 +43,10 @@ add_subdirectory(lib/RocketSim)
 
 add_executable(quasar
     src/main.cpp
-    src/rlenv.cpp
-    src/vecenv.cpp
+    src/env/rlenv.cpp
+    src/env/vecenv.cpp
+    src/rl/MLP.cpp
+    src/rl/PPO.cpp
 )
 
 target_include_directories(quasar PRIVATE
@@ -57,4 +60,44 @@ else()
     target_compile_definitions(quasar PRIVATE ENABLE_TRACING=0)
 endif()
 
+# Always link RocketSim
 target_link_libraries(quasar PRIVATE RocketSim)
+
+set(LIBTORCH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libtorch")
+list(APPEND CMAKE_PREFIX_PATH ${LIBTORCH_DIR})
+message(STATUS "Using libtorch from: ${LIBTORCH_DIR}")
+
+find_package(Torch REQUIRED)
+message(STATUS "libtorch: ${TORCH_VERSION}")
+
+if(DEFINED TORCH_CXX_FLAGS)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+    message(STATUS "Applied TORCH_CXX_FLAGS to CMAKE_CXX_FLAGS")
+endif()
+
+if(TARGET Torch::Torch)
+    target_link_libraries(quasar PRIVATE Torch::Torch)
+else()
+    target_link_libraries(quasar PRIVATE "${TORCH_LIBRARIES}")
+endif()
+
+if (MSVC)
+  if(DEFINED TORCH_INSTALL_PREFIX)
+    file(GLOB TORCH_DLLS "${TORCH_INSTALL_PREFIX}/lib/*.dll")
+  else()
+    # Fall back to common variable used by some Torch CMake configs
+    file(GLOB TORCH_DLLS "${TORCH_ROOT}/lib/*.dll" "${TORCH_HOME}/lib/*.dll")
+  endif()
+  add_custom_command(TARGET quasar
+                     POST_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                     ${TORCH_DLLS}
+                     $<TARGET_FILE_DIR:quasar>)
+endif()
+
+if(LIBTORCH_USE_CXX11_ABI)
+    # Set per-target compile definition to control C++ ABI compatibility
+    target_compile_definitions(quasar PRIVATE _GLIBCXX_USE_CXX11_ABI=${LIBTORCH_USE_CXX11_ABI})
+endif()
+
+target_compile_definitions(quasar PRIVATE USE_LIBTORCH=1)

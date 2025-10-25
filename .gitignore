@@ -1,3 +1,6 @@
+#libtorch
+libtorch/
+
 # Build directories
 build/
 cmake-build-*/
@@ -40,3 +43,12 @@ MyRocketSimProject
 
 # Debug files
 *.dSYM/
+
+# Model checkpoints
+models/
+*.pt
+*.pth
+
+# Performance traces
+*.json
+perfetto_trace.json
